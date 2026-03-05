@@ -69,7 +69,7 @@ async function onSubmitQuestion() {
         output.textContent += chunk;
     }
 
-   toggleSendOrStopButton(false);
+    toggleSendOrStopButton(false);
 }
 
 function toggleSendOrStopButton(isGenerating) {
@@ -90,26 +90,24 @@ async function* askAI(question, temperature, topK) {
     aiContext.abortController?.abort();
     aiContext.abortController = new AbortController();
 
-    // Destroy previous session and create new one with updated parameters
-    if (aiContext.session) {
-        aiContext.session.destroy();
+    // Criar sessão apenas se não existir
+    if (!aiContext.session) {
+        aiContext.session = await LanguageModel.create({
+            expectedInputLanguages: ["pt"],
+            temperature: temperature,
+            topK: topK,
+            initialPrompts: [
+                {
+                    role: 'system',
+                    content: `
+                    Você é um assistente de IA que responde de forma clara e objetiva.
+                    Responda sempre em formato de texto ao invés de markdown`
+                },
+            ],
+        });
     }
 
-    const session = await LanguageModel.create({
-        expectedInputLanguages: ["pt"],
-        temperature: temperature,
-        topK: topK,
-        initialPrompts: [
-            {
-                role: 'system', content: `
-                Você é um assistente de IA que responde de forma clara e objetiva.
-                Responda sempre em formato de texto ao invés de markdown`
-
-            },
-        ],
-    });
-
-    const responseStream = await session.promptStreaming(
+    const responseStream = await aiContext.session.promptStreaming(
         [
             {
                 role: 'user',
@@ -130,83 +128,59 @@ async function* askAI(question, temperature, topK) {
 }
 
 async function checkRequirements() {
+
     const errors = [];
     const returnResults = () => errors.length ? errors : null;
 
-    // @ts-ignore
     const isChrome = !!window.chrome;
-    if (!isChrome)
-        errors.push("⚠️ Este recurso só funciona no Google Chrome ou Chrome Canary (versão recente).");
+
+    if (!isChrome) {
+        errors.push("⚠️ Este recurso só funciona no Google Chrome ou Chrome Canary.");
+    }
+
     if (!('LanguageModel' in self)) {
         errors.push("⚠️ As APIs nativas de IA não estão ativas.");
-        errors.push("Ative a seguinte flag em chrome://flags/:");
-        errors.push("- Prompt API for Gemini Nano (chrome://flags/#prompt-api-for-gemini-nano)");
-        errors.push("Depois reinicie o Chrome e tente novamente.");
+        errors.push("Ative a flag em chrome://flags/");
+        errors.push("Prompt API for Gemini Nano");
+        errors.push("Depois reinicie o Chrome.");
         return returnResults();
     }
 
     const availability = await LanguageModel.availability({ languages: ["pt"] });
-    console.log('Language Model Availability:', availability);
+    console.log("Language Model Availability:", availability);
+
     if (availability === 'available') {
         return returnResults();
     }
 
     if (availability === 'unavailable') {
-        errors.push(`⚠️ O seu dispositivo não suporta modelos de linguagem nativos de IA.`);
+        errors.push("⚠️ Seu dispositivo não suporta o modelo de IA.");
     }
 
     if (availability === 'downloading') {
-        errors.push(`⚠️ O modelo de linguagem de IA está sendo baixado. Por favor, aguarde alguns minutos e tente novamente.`);
+        errors.push("⚠️ O modelo está sendo baixado pelo Chrome. Aguarde alguns minutos.");
     }
 
     if (availability === 'downloadable') {
-        errors.push(`⚠️ O modelo de linguagem de IA precisa ser baixado, baixando agora... (acompanhe o progresso no terminal do chrome)`);
-        try {
-            const session = await LanguageModel.create({
-                expectedInputLanguages: ["pt"],
-                monitor(m) {
-                    m.addEventListener('downloadprogress', (e) => {
-                        const percent = ((e.loaded / e.total) * 100).toFixed(0);
-                        console.log(`Downloaded ${percent}%`);
-                    });
-                }
-            });
-            await session.prompt('Olá');
-            session.destroy();
-
-            // Re-check availability after download
-            const newAvailability = await LanguageModel.availability({ languages: ["pt"] });
-            if (newAvailability === 'available') {
-                return null; // Download successful
-            }
-        } catch (error) {
-            console.error('Error downloading model:', error);
-            errors.push(`⚠️ Erro ao baixar o modelo: ${error.message}`);
-        }
+        errors.push("⚠️ O modelo será baixado automaticamente quando você fizer a primeira pergunta.");
     }
 
     return returnResults();
-
 }
 
 (async function main() {
+
     elements.year.textContent = new Date().getFullYear();
 
     const reqErrors = await checkRequirements();
+
     if (reqErrors) {
         elements.output.innerHTML = reqErrors.join('<br/>');
-        elements.button.disabled = true;
-        return;
     }
 
     const params = await LanguageModel.params();
-    console.log('Language Model Params:', params);
-    /*
-    defaultTemperature: 1
-    defaultTopK:3
-    maxTemperature:2
-    maxTopK:128
-    */
+
+    console.log("Language Model Params:", params);
 
     elements.topK.max = params.maxTopK;
     elements.topK.min = 1;
@@ -217,6 +191,7 @@ async function checkRequirements() {
     elements.temperature.max = params.maxTemperature;
     elements.temperature.min = 0;
     elements.temperature.value = params.defaultTemperature;
-    return setupEventListeners()
-})();
 
+    setupEventListeners();
+
+})();
