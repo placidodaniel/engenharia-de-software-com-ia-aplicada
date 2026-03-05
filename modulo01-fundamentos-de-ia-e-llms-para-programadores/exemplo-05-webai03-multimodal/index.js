@@ -8,7 +8,7 @@ import { FormController } from './controllers/formController.js';
     const aiService = new AIService();
     const translationService = new TranslationService();
     const view = new View();
-    
+
     // Set current year
     view.setYear();
 
@@ -21,7 +21,13 @@ import { FormController } from './controllers/formController.js';
 
     // Initialize translation services
     try {
-        await translationService.initialize();
+        const translatorAvailability = await translationService.initialize();
+
+        // If translator is not available yet (downloadable or downloading),
+        // we continue but may need user gesture to download
+        if (translatorAvailability !== 'available') {
+            console.log('Translator needs download, will be available on first use');
+        }
     } catch (error) {
         console.error('Error initializing translation:', error);
         view.showError([error.message]);

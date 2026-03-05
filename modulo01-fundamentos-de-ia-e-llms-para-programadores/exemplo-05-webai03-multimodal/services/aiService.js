@@ -31,6 +31,11 @@ export class AIService {
 
             if (translatorAvailability === 'no') {
                 errors.push("⚠️ Tradução de inglês para português não está disponível.");
+            } else if (translatorAvailability === 'downloadable') {
+                // Store this for later - user needs to click to download
+                console.log('Translator is downloadable - needs user gesture');
+            } else if (translatorAvailability === 'downloading') {
+                errors.push("⚠️ O tradutor está sendo baixado. Por favor, aguarde e tente novamente.");
             }
         } else {
             errors.push("⚠️ A API de Tradução não está ativa.");
@@ -106,59 +111,107 @@ export class AIService {
         // Destroy previous session and create new one with updated parameters
         if (this.session) {
             this.session.destroy();
+            this.session = null;
         }
 
-        this.session = await LanguageModel.create({
-            expectedInputs: [
-                { type: "text", languages: ["en"] },
-                { type: "audio" },
-                { type: "image" },
-            ],
-            expectedOutputs: [{ type: "text", languages: ["en"] }],
-            temperature: temperature,
-            topK: topK,
-            initialPrompts: [
+        // Check availability first
+        try {
+            const availability = await LanguageModel.availability({ languages: ["en"] });
+            console.log('Language Model Availability before create:', availability);
+
+            if (availability === 'downloadable') {
+                console.log('Model needs download, initiating download...');
+                try {
+                    const tempSession = await LanguageModel.create({
+                        expectedInputLanguages: ["en"],
+                        monitor(m) {
+                            m.addEventListener('downloadprogress', (e) => {
+                                const percent = ((e.loaded / e.total) * 100).toFixed(0);
+                                console.log(`Model download progress: ${percent}%`);
+                            });
+                        }
+                    });
+                    tempSession.destroy();
+                } catch (downloadError) {
+                    console.log('Download error (might be OK):', downloadError.message);
+                }
+            }
+        } catch (checkError) {
+            console.log('Availability check error:', checkError.message);
+        }
+
+        // Try to create session directly
+        try {
+            // Check if we're sending a file
+            const hasFile = file && (file.type.startsWith('image/') || file.type.startsWith('audio/'));
+
+            const sessionOptions = {
+                temperature: temperature,
+                topK: topK,
+            };
+
+            // Add multimodal support if sending file
+            if (hasFile) {
+                const fileType = file.type.split('/')[0];
+                sessionOptions.expectedInputs = [
+                    { type: "text", languages: ["en"] },
+                ];
+                if (fileType === 'image') {
+                    sessionOptions.expectedInputs.push({ type: "image" });
+                } else if (fileType === 'audio') {
+                    sessionOptions.expectedInputs.push({ type: "audio" });
+                }
+            }
+
+            sessionOptions.initialPrompts = [
                 {
                     role: 'system',
                     content: [{
                         type: "text",
                         value: `You are an AI assistant that responds clearly and objectively.
-                        Always respond in plain text format instead of markdown.`
+Always respond in plain text format instead of markdown.`
                     }]
                 },
-            ],
-        });
+            ];
 
-        // Build content array with text and optional file
-        const contentArray = [{ type: "text", value: question }];
+            console.log('Creating session with options:', sessionOptions);
 
-        if (file) {
-            const fileType = file.type.split('/')[0];
-            if (fileType === 'image' || fileType === 'audio') {
-                // Convert file to blob for proper handling
-                const blob = new Blob([await file.arrayBuffer()], { type: file.type });
-                contentArray.push({ type: fileType, value: blob });
-                console.log(`Adding ${fileType} to prompt:`, file.name);
+            this.session = await LanguageModel.create(sessionOptions);
+
+            // Build content array with text and optional file
+            const contentArray = [{ type: "text", value: question }];
+
+            if (file) {
+                const fileType = file.type.split('/')[0];
+                if (fileType === 'image' || fileType === 'audio') {
+                    // Convert file to blob for proper handling
+                    const blob = new Blob([await file.arrayBuffer()], { type: file.type });
+                    contentArray.push({ type: fileType, value: blob });
+                    console.log(`Adding ${fileType} to prompt:`, file.name);
+                }
             }
-        }
 
-        const responseStream = await this.session.promptStreaming(
-            [
+            const responseStream = await this.session.promptStreaming(
+                [
+                    {
+                        role: 'user',
+                        content: contentArray,
+                    },
+                ],
                 {
-                    role: 'user',
-                    content: contentArray,
-                },
-            ],
-            {
-                signal: this.abortController.signal,
-            }
-        );
+                    signal: this.abortController.signal,
+                }
+            );
 
-        for await (const chunk of responseStream) {
-            if (this.abortController.signal.aborted) {
-                break;
+            for await (const chunk of responseStream) {
+                if (this.abortController.signal.aborted) {
+                    break;
+                }
+                yield chunk;
             }
-            yield chunk;
+        } catch (sessionError) {
+            console.error('Error creating session:', sessionError);
+            throw new Error(`Erro ao criar sessão de IA: ${sessionError.message}`);
         }
     }
 
